@@ -16,31 +16,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ═══════════════════════════════════════════════
-      # STEP TAMBAHAN: EXTRACT ZIP KALAU ADA
-      # ═══════════════════════════════════════════════
       - name: Extract Project ZIP (if exists)
         run: |
           ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -1)
           if [ -z "$ZIP_FILE" ]; then
-            echo "ℹ️ No ZIP file found, using existing project structure"
+            echo "ℹ️ No ZIP file found"
             exit 0
           fi
           echo "📦 Found ZIP: $ZIP_FILE"
           unzip -o "$ZIP_FILE" -d project/
-          echo "✅ Extracted to project/"
-          ls -la project/
-
-          # Detect folder android/ di dalam ZIP
           if [ -d "project/android" ]; then
-            echo "📂 Moving project/android/* to root"
             mv project/android/* . 2>/dev/null || true
             mv project/android/.[!.]* . 2>/dev/null || true
           elif [ -d "project/app" ]; then
-            echo "📂 Moving project/* to root"
             mv project/* . 2>/dev/null || true
           fi
-
           echo "📂 Final structure:"
           ls -la
 
@@ -62,9 +52,6 @@ jobs:
         run: python3 generate_icons.py
         continue-on-error: true
 
-      # ═══════════════════════════════════════════════
-      # STEP FIX: DETECT FOLDER GRADLEW
-      # ═══════════════════════════════════════════════
       - name: Detect Android Directory
         run: |
           if [ -f "android/gradlew" ]; then
@@ -91,10 +78,71 @@ jobs:
             chmod +x gradlew
           fi
 
+      # ═══════════════════════════════════════════════
+      # FIX #1: HAPUS package DARI MANIFEST + ADD NAMESPACE
+      # ═══════════════════════════════════════════════
+      - name: Fix AGP - Remove package, Add namespace
+        run: |
+          if [ "$ANDROID_DIR" = "android" ]; then
+            MANIFEST="android/app/src/main/AndroidManifest.xml"
+            GRADLE="android/app/build.gradle"
+          else
+            MANIFEST="app/src/main/AndroidManifest.xml"
+            GRADLE="app/build.gradle"
+          fi
+
+          echo "═══════════════════════════════════════"
+          echo "🔧 FIXING MANIFEST: $MANIFEST"
+          echo "═══════════════════════════════════════"
+
+          if [ -f "$MANIFEST" ]; then
+            # Hapus package="..." dari Manifest
+            sed -i 's/package="[^"]*"//g' "$MANIFEST"
+            echo "✅ Removed package attribute from Manifest"
+
+            # Hapus extractNativeLibs (deprecated di AGP baru)
+            sed -i 's/android:extractNativeLibs="[^"]*"//g' "$MANIFEST"
+            echo "✅ Removed extractNativeLibs attribute"
+          fi
+
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "🔧 FIXING BUILD.GRADLE: $GRADLE"
+          echo "═══════════════════════════════════════"
+
+          if [ -f "$GRADLE" ]; then
+            # Cek apakah namespace sudah ada
+            if ! grep -q "namespace" "$GRADLE"; then
+              echo "➕ Adding namespace to $GRADLE"
+              # Tambah namespace setelah 'android {'
+              sed -i '0,/android\s*{/s//android {\n    namespace "com.sync.xxx"/' "$GRADLE"
+              echo "✅ Namespace added"
+            else
+              echo "ℹ️ Namespace already exists"
+            fi
+
+            # Fix extractNativeLibs → useLegacyPackaging
+            if grep -q "extractNativeLibs" "$GRADLE"; then
+              sed -i 's/extractNativeLibs.*/useLegacyPackaging false/' "$GRADLE"
+              echo "✅ Fixed extractNativeLibs in build.gradle"
+            fi
+          fi
+
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "✅ AGP FIX COMPLETE"
+          echo "═══════════════════════════════════════"
+          echo ""
+          echo "📄 Manifest header:"
+          head -15 "$MANIFEST"
+          echo ""
+          echo "📄 Build.gradle header:"
+          head -20 "$GRADLE"
+
       - name: Build Release APK
         run: |
           cd $ANDROID_DIR
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         run: |
